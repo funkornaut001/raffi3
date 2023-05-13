@@ -3,7 +3,7 @@ pragma solidity ^0.8.7;
 
 /*
 Notes:
-I get a random error ""The requested account and/or method has not been authorized by the user." sometimes when trying to buy tickets
+
 */
 
 import "@openzeppelin/contracts/access/AccessControl.sol";
@@ -11,9 +11,9 @@ import "@openzeppelin/contracts/token/ERC721/IERC721.sol";
 import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
 import "@openzeppelin/contracts/utils/math/Math.sol";
 import "@chainlink/contracts/src/v0.8/interfaces/VRFCoordinatorV2Interface.sol";
-import "@chainlink/contracts/src/v0.8/VRFConsumerBaseV2.sol";
+import "@chainlink/contracts/src/v0.8/vrf/VRFConsumerBaseV2.sol";
 import "@chainlink/contracts/src/v0.8/ConfirmedOwner.sol";
-import "@chainlink/contracts/src/v0.8/AutomationCompatible.sol";
+import "@chainlink/contracts/src/v0.8/automation/AutomationCompatible.sol";
 
 
 /*
@@ -196,6 +196,10 @@ contract Manager2 is
         );
     }
 
+    //////////////////////////
+    ///// VRFv2 functions ////
+    //////////////////////////
+
     // this function is called during setWinner. It will request a random number from the VRF
     // and save the raffleId and the number of entries in the raffle in a map. If a request is
     // successful, the callback function, fulfillRandomWords will be called.
@@ -288,42 +292,18 @@ contract Manager2 is
     //     }
     // }
     
-    
-    // checkUpkeep checks if there are any raffles with tickets sold out or the raffle time has ended
-// function checkUpkeep(bytes calldata /* checkData */)
-//     external
-//     view
-//     override
-//     returns (bool upkeepNeeded, bytes memory performData)
-// {
-//     for (uint256 i = 0; i < raffles.length; i++) {
-//         RaffleStruct storage raffle = raffles[i];
-    
-//         bool isSoldOut = raffle.entriesLength == raffle.maxEntries;
-//         bool isTimeUp = raffle.expiryTimeStamp > block.timestamp;
+    /////////////////////////
+    //// Automation /////////
+    /////////////////////////
 
-//         if (
-//             raffle.status == STATUS.ACCEPTED &&
-//             (isTimeUp || isSoldOut)
-//         ) {
-//             upkeepNeeded = true;
-//             performData = abi.encodeWithSelector(
-//                 this.setWinner.selector,
-//                 i
-//             );
-//             break;
-//         }
-//     }
-// }
 
-/// v3
  /**
      * @dev This is the function that the Chainlink Keeper nodes call
      * they look for `upkeepNeeded` to return True.
      * the following should be true for this to return true:
-     * 1. The time interval has passed between raffle runs.
-     * 2. The lottery is open.
-     * 3. The contract has ETH.
+     * 1. The raffle has been accepted.
+     * 2. The raffle has sold out or the time has passed.
+     * 3. The raffle has participants (entries bought).
      * 4. Implicity, your subscription is funded with LINK.
      */
     function checkUpkeep(
@@ -351,26 +331,9 @@ contract Manager2 is
     }
     }
 
-
-    // performUpkeep transfers NFT and funds for raffles with randomNumberAvailable = true
-    // function performUpkeep(bytes calldata performData) external override {
-    //     (uint256 raffleId) = abi.decode(performData, (uint256));
-    //      require(raffleId < raffles.length, "Invalid raffleId");
-    // RaffleStruct storage raffle = raffles[raffleId];
-    // require(raffle.status == STATUS.CLOSING_REQUESTED, "Raffle not ready for closing");
-    // require(raffle.randomNumberAvailable, "Random number not available");
-    //     this.transferNFTAndFunds(raffleId);
-    // }
-
-// function performUpkeep(bytes calldata performData) external override {
-//     (uint256 raffleId) = abi.decode(performData, (uint256));
-//     this.setWinner(raffleId);
-// }
-
-//// v3
     /**
      * @dev Once `checkUpkeep` is returning `true`, this function is called
-     * and it kicks off a Chainlink VRF call to get a random winner.
+     * and it kicks off a Chainlink VRFv2 call to get a random number.
      */
     function performUpkeep(
         bytes calldata performData
@@ -378,15 +341,7 @@ contract Manager2 is
         (uint256 raffleId) = abi.decode(performData, (uint256));
         RaffleStruct storage raffle = raffles[raffleId];
 
-        // (bool upkeepNeeded, ) = checkUpkeep("");
-        // // require(upkeepNeeded, "Upkeep not needed");
-        // if (!upkeepNeeded) {
-        //     revert Raffle__UpkeepNotNeeded(
-        //         // address(this).balance,
-        //         // s_players.length,
-        //         // uint256(s_raffleState)
-        //     );
-        // }
+    
         (bool upkeepNeeded, ) = checkUpkeep("");
         require(upkeepNeeded, "Upkeep not needed");
         require(raffleId < raffles.length, "Invalid raffleId");
@@ -405,193 +360,10 @@ contract Manager2 is
 
     }
 
-
+    ////////////////////////
+    /// Raffle Functions ///
+    ////////////////////////
   
-
-    // modifier for transferNFTAndFunds. It will check that the caller is the owner or the seller
-    /// @param _raffleId is the raffleId
-    modifier onlyTrustedCaller(uint256 _raffleId) {
-        RaffleStruct storage raffle = raffles[_raffleId];
-        require(
-            msg.sender == owner() || msg.sender == raffle.seller, // Add other trusted parties if necessary
-            "Caller not authorized"
-        );
-        _;
-    }
-
-    // triggered by the VRF callback function fulfillRandomWords, it will transfer the NFT
-    // to the winner and the funds to the seller
-    /// @param _raffleId Id of the raffle
-    function transferNFTAndFunds(
-        uint256 _raffleId
-    ) external nonReentrant onlyTrustedCaller(_raffleId) {
-        RaffleStruct storage raffle = raffles[_raffleId];
-        // Check that the random number is available and the raffle is in the correct state
-        require(
-            raffle.randomNumberAvailable &&
-                raffle.status == STATUS.CLOSING_REQUESTED,
-            "Raffle in wrong status or random number not available"
-        );
-        raffle.winner = (raffle.amountRaised == 0)
-            ? raffle.seller
-            : getWinnerAddressFromRandom(_raffleId, raffle.randomNumber);
-
-        IERC721(raffle.collateralAddress).transferFrom(
-            address(this),
-            raffle.winner,
-            raffle.collateralId
-        );
-
-        uint256 amountForPlatform = (raffle.amountRaised *
-            raffle.platformPercentage) / 10000;
-        uint256 amountForSeller = raffle.amountRaised - amountForPlatform;
-
-        // transfer 95% to the seller
-        (bool sent, ) = raffle.seller.call{value: amountForSeller}("");
-        require(sent, "Failed to send Ether to seller");
-
-        // transfer 5% to the platform
-        (bool sent2, ) = destinationWallet.call{value: amountForPlatform}("");
-        require(sent2, "Failed to send Ether to platform");
-
-        raffle.status = STATUS.ENDED;
-        raffle.randomNumberAvailable = false;
-
-        emit RaffleEnded(
-            _raffleId,
-            raffle.winner,
-            raffle.amountRaised,
-            raffle.randomNumber
-        );
-    }
-
-    // helper unction to view the current status of the raffle
-    /// @param _raffleId Id of the raffle
-    /// @return status of the raffle
-    function getRaffleStatus(uint256 _raffleId) public view returns (STATUS) {
-        RaffleStruct storage raffle = raffles[_raffleId];
-        return raffle.status;
-    }
-
-    // helper unction to get the status of the chainlink request
-    /// @param _requestId Id of the request
-    /// @return fulfilled status of the request
-    /// @return randomWords random number generated by the VRF
-    function getRequestStatus(
-        uint256 _requestId
-    ) external view returns (bool fulfilled, uint256[] memory randomWords) {
-        require(s_requests[_requestId].exists, "request not found");
-        RequestStatus memory request = s_requests[_requestId];
-        return (request.fulfilled, request.randomWords);
-    }
-
-    // helper function to get the length of entriesList for a raffle
-    /// @param _raffleId Id of the raffle
-    /// @return length of the entriesList
-    function getEntriesSize(uint256 _raffleId) public view returns (uint256) {
-        return entriesList[_raffleId].length;
-    }
-
-    // helper function to get the raffle randomNumberAvailable bool for a raffle
-    /// @param _raffleId Id of the raffle
-    /// @return randomNumberAvailable bool
-    function getRandomNumberAvailable(
-        uint256 _raffleId
-    ) public view returns (bool) {
-        return raffles[_raffleId].randomNumberAvailable;
-    }
-
-    // helper function to get the raffle randomNumber for a raffle
-    /// @param _raffleId Id of the raffle
-    /// @return randomNumber
-    function getRaffleRandomNumber(
-        uint256 _raffleId
-    ) public view returns (uint256) {
-        return raffles[_raffleId].randomNumber;
-    }
-
-    // helper function for onlyOwner to extract the NFT from the contract
-    // in the case of a failed raffle. This is to avoid the NFT being stuck in the contract
-    // if the chainlink callback function does not exectute as expected
-    /// @param _raffleId Id of the raffle
-    function extractNFT(uint256 _raffleId) public onlyOwner {
-        RaffleStruct storage raffle = raffles[_raffleId];
-        require(raffle.collateralId != 0, "Raffle collateralId is not set");
-        require(
-            raffle.collateralAddress != address(0),
-            "Raffle collateralAddress is not set"
-        );
-        IERC721(raffle.collateralAddress).safeTransferFrom(
-            address(this),
-            owner(),
-            raffle.collateralId
-        );
-    }
-
-    // helper function for onlyOwner to extract the funds from the contract
-    // in the case of a failed raffle. This is to avoid the funds being stuck in the contract
-    // if the chainlink callback function does not exectute as expected
-    /// @param _raffleId Id of the raffle
-    function extractFunds(uint256 _raffleId) public payable onlyOwner {
-        RaffleStruct storage raffle = raffles[_raffleId];
-        require(raffle.collateralId != 0, "Raffle collateralId is not set");
-        require(
-            raffle.collateralAddress != address(0),
-            "Raffle collateralAddress is not set"
-        );
-
-        payable(owner()).transfer(raffle.amountRaised);
-    }
-
-    // helper function to get the number of all the entries bought for a
-    // particular raffle
-    /// @param _raffleId Id of the raffle
-    /// @return entriesLength length of entries
-    function getNumberOfEntries(
-        uint256 _raffleId
-    ) public view returns (uint256) {
-        RaffleStruct storage raffle = raffles[_raffleId];
-        return raffle.entriesLength;
-    }
-
-    // helper function to get all of the raffle struct data
-    // for a particular raffle Id
-    /// @param _raffleId Id of the raffle
-    function getRaffle(
-        uint256 _raffleId
-    )
-        public
-        view
-        returns (
-            STATUS,
-            uint256,
-            address,
-            uint256,
-            address,
-            uint256,
-            uint256,
-            address,
-            uint256,
-            uint256,
-            uint256
-        )
-    {
-        RaffleStruct storage raffle = raffles[_raffleId];
-        return (
-            raffle.status,
-            raffle.amountRaised,
-            raffle.collateralAddress,
-            raffle.collateralId,
-            raffle.seller,
-            raffle.entriesLength,
-            raffle.randomNumber,
-            raffle.winner,
-            raffle.platformPercentage,
-            raffle.expiryTimeStamp,
-            raffle.maxEntries
-        );
-    }
-
     // function to create a raffle
     /// @param _collateralAddress The address of the NFT of the raffle
     /// @param _collateralId The id of the NFT (ERC721)
@@ -726,6 +498,206 @@ contract Manager2 is
         emit EntrySold(_raffleId, msg.sender, _numberOfTickets);
     }
 
+    // modifier for transferNFTAndFunds. It will check that the caller is the owner or the seller
+    /// @param _raffleId is the raffleId
+    modifier onlyTrustedCaller(uint256 _raffleId) {
+        RaffleStruct storage raffle = raffles[_raffleId];
+        require(
+            msg.sender == owner() || msg.sender == raffle.seller, // Add other trusted parties if necessary
+            "Caller not authorized"
+        );
+        _;
+    }
+
+    /**
+     * This function will transfer the NFT to the winner and the funds to the seller & platform.
+     * Only the raffle creator or the platform owner can call this function.
+     * @param _raffleId Id of the raffle 
+    */
+    function transferNFTAndFunds(
+        uint256 _raffleId
+    ) external nonReentrant onlyTrustedCaller(_raffleId) {
+        RaffleStruct storage raffle = raffles[_raffleId];
+        // Check that the random number is available and the raffle is in the correct state
+        require(
+            raffle.randomNumberAvailable &&
+                raffle.status == STATUS.CLOSING_REQUESTED,
+            "Raffle in wrong status or random number not available"
+        );
+        raffle.winner = (raffle.amountRaised == 0)
+            ? raffle.seller
+            : getWinnerAddressFromRandom(_raffleId, raffle.randomNumber);
+
+        IERC721(raffle.collateralAddress).transferFrom(
+            address(this),
+            raffle.winner,
+            raffle.collateralId
+        );
+
+        uint256 amountForPlatform = (raffle.amountRaised *
+            raffle.platformPercentage) / 10000;
+        uint256 amountForSeller = raffle.amountRaised - amountForPlatform;
+
+        // transfer 95% to the seller
+        (bool sent, ) = raffle.seller.call{value: amountForSeller}("");
+        require(sent, "Failed to send Ether to seller");
+
+        // transfer 5% to the platform
+        (bool sent2, ) = destinationWallet.call{value: amountForPlatform}("");
+        require(sent2, "Failed to send Ether to platform");
+
+        raffle.status = STATUS.ENDED;
+        raffle.randomNumberAvailable = false;
+
+        emit RaffleEnded(
+            _raffleId,
+            raffle.winner,
+            raffle.amountRaised,
+            raffle.randomNumber
+        );
+    }
+
+
+    // The operator can add free entries to the raffle
+    /// @param _raffleId Id of the raffle
+    /// @param _freePlayers array of addresses corresponding to the wallet of the users that won a free entrie
+    /// @dev only operator can make this call. Assigns a single entry per user, except if that user already reached the max limit of entries per user
+    function giveBatchEntriesForFree(
+        uint256 _raffleId,
+        address[] memory _freePlayers
+    ) external nonReentrant onlyRole(OPERATOR_ROLE) {
+        require(
+            raffles[_raffleId].status == STATUS.ACCEPTED,
+            "Raffle is not in accepted"
+        );
+
+        uint256 freePlayersLength = _freePlayers.length;
+        uint256 validPlayersCount = 0;
+
+        for (uint256 i = 0; i < freePlayersLength; i++) {
+            address entry = _freePlayers[i];
+            EntriesBought memory entryBought = EntriesBought({
+                player: entry,
+                currentEntriesLength: 1
+            });
+            entriesList[_raffleId].push(entryBought);
+
+            claimsData[keccak256(abi.encode(entry, _raffleId))]
+                .numEntriesPerUser++; // needed?
+
+            ++validPlayersCount;
+        }
+
+        raffles[_raffleId].entriesLength =
+            raffles[_raffleId].entriesLength +
+            validPlayersCount;
+
+        emit FreeEntry(
+            _raffleId,
+            _freePlayers,
+            freePlayersLength,
+            raffles[_raffleId].entriesLength
+        );
+    }
+
+    /////////////////////////////
+    ////// Getter functions /////
+    /////////////////////////////
+
+    // helper unction to view the current status of the raffle
+    /// @param _raffleId Id of the raffle
+    /// @return status of the raffle
+    function getRaffleStatus(uint256 _raffleId) public view returns (STATUS) {
+        RaffleStruct storage raffle = raffles[_raffleId];
+        return raffle.status;
+    }
+
+    // helper unction to get the status of the chainlink request
+    /// @param _requestId Id of the request
+    /// @return fulfilled status of the request
+    /// @return randomWords random number generated by the VRF
+    function getRequestStatus(
+        uint256 _requestId
+    ) external view returns (bool fulfilled, uint256[] memory randomWords) {
+        require(s_requests[_requestId].exists, "request not found");
+        RequestStatus memory request = s_requests[_requestId];
+        return (request.fulfilled, request.randomWords);
+    }
+
+    // helper function to get the length of entriesList for a raffle
+    /// @param _raffleId Id of the raffle
+    /// @return length of the entriesList
+    function getEntriesSize(uint256 _raffleId) public view returns (uint256) {
+        return entriesList[_raffleId].length;
+    }
+
+    // helper function to get the raffle randomNumberAvailable bool for a raffle
+    /// @param _raffleId Id of the raffle
+    /// @return randomNumberAvailable bool
+    function getRandomNumberAvailable(
+        uint256 _raffleId
+    ) public view returns (bool) {
+        return raffles[_raffleId].randomNumberAvailable;
+    }
+
+    // helper function to get the raffle randomNumber for a raffle
+    /// @param _raffleId Id of the raffle
+    /// @return randomNumber
+    function getRaffleRandomNumber(
+        uint256 _raffleId
+    ) public view returns (uint256) {
+        return raffles[_raffleId].randomNumber;
+    }
+
+    // helper function to get the number of all the entries bought for a
+    // particular raffle
+    /// @param _raffleId Id of the raffle
+    /// @return entriesLength length of entries
+    function getNumberOfEntries(
+        uint256 _raffleId
+    ) public view returns (uint256) {
+        RaffleStruct storage raffle = raffles[_raffleId];
+        return raffle.entriesLength;
+    }
+
+    // helper function to get all of the raffle struct data
+    // for a particular raffle Id
+    /// @param _raffleId Id of the raffle
+    function getRaffle(
+        uint256 _raffleId
+    )
+        public
+        view
+        returns (
+            STATUS,
+            uint256,
+            address,
+            uint256,
+            address,
+            uint256,
+            uint256,
+            address,
+            uint256,
+            uint256,
+            uint256
+        )
+    {
+        RaffleStruct storage raffle = raffles[_raffleId];
+        return (
+            raffle.status,
+            raffle.amountRaised,
+            raffle.collateralAddress,
+            raffle.collateralId,
+            raffle.seller,
+            raffle.entriesLength,
+            raffle.randomNumber,
+            raffle.winner,
+            raffle.platformPercentage,
+            raffle.expiryTimeStamp,
+            raffle.maxEntries
+        );
+    }
+
     // helper function to get the price structure for a given raffle
     /// @param _idRaffle: id of the raffle
     /// @return priceStruct: price structure for the raffle
@@ -761,21 +733,61 @@ contract Manager2 is
         return winner;
     }
 
+    /////////////////////////////
+    ////// Helper functions /////
+    /////////////////////////////
+
+
+    // helper function for onlyOwner to extract the NFT from the contract
+    // in the case of a failed raffle. This is to avoid the NFT being stuck in the contract
+    // if the chainlink callback function does not exectute as expected
+    /// @param _raffleId Id of the raffle
+    function extractNFT(uint256 _raffleId) public onlyOwner {
+        RaffleStruct storage raffle = raffles[_raffleId];
+        require(raffle.collateralId != 0, "Raffle collateralId is not set");
+        require(
+            raffle.collateralAddress != address(0),
+            "Raffle collateralAddress is not set"
+        );
+        IERC721(raffle.collateralAddress).safeTransferFrom(
+            address(this),
+            owner(),
+            raffle.collateralId
+        );
+    }
+
+    // helper function for onlyOwner to extract the funds from the contract
+    // in the case of a failed raffle. This is to avoid the funds being stuck in the contract
+    // if the chainlink callback function does not exectute as expected
+    /// @param _raffleId Id of the raffle
+    function extractFunds(uint256 _raffleId) public payable onlyOwner {
+        RaffleStruct storage raffle = raffles[_raffleId];
+        require(raffle.collateralId != 0, "Raffle collateralId is not set");
+        require(
+            raffle.collateralAddress != address(0),
+            "Raffle collateralAddress is not set"
+        );
+
+        payable(owner()).transfer(raffle.amountRaised);
+    }
+
+    
+
     // function to set the winner of a raffle, kicks off VRF. 
     /// @param _raffleId Id of the raffle
-    function setWinner(uint256 _raffleId) external onlyOwner nonReentrant {
-        RaffleStruct storage raffle = raffles[_raffleId];
+    // function setWinner(uint256 _raffleId) external onlyOwner nonReentrant {
+    //     RaffleStruct storage raffle = raffles[_raffleId];
 
-        require(raffle.status == STATUS.ACCEPTED, "Raffle in wrong status");
-        require(
-        raffle.expiryTimeStamp < block.timestamp || raffle.entriesLength == raffle.maxEntries,
-        "Raffle not expired yet or not sold out"
-    );
+    //     require(raffle.status == STATUS.ACCEPTED, "Raffle in wrong status");
+    //     require(
+    //     raffle.expiryTimeStamp < block.timestamp || raffle.entriesLength == raffle.maxEntries,
+    //     "Raffle not expired yet or not sold out"
+    // );
 
-        requestRandomWords(_raffleId, raffle.entriesLength);
-        raffle.status = STATUS.CLOSING_REQUESTED;
-        emit SetWinnerTriggered(_raffleId, raffle.amountRaised);
-    }
+    //     requestRandomWords(_raffleId, raffle.entriesLength);
+    //     raffle.status = STATUS.CLOSING_REQUESTED;
+    //     emit SetWinnerTriggered(_raffleId, raffle.amountRaised);
+    // }
 
     // function to manually set the winner of a raffle. Only callable by the owner
     // this is useful in case Chainlink VRF fails to generate a random number
@@ -863,47 +875,5 @@ contract Manager2 is
         });
         emit RequestSent(requestId, numWords);
         return requestId;
-    }
-
-    // The operator can add free entries to the raffle
-    /// @param _raffleId Id of the raffle
-    /// @param _freePlayers array of addresses corresponding to the wallet of the users that won a free entrie
-    /// @dev only operator can make this call. Assigns a single entry per user, except if that user already reached the max limit of entries per user
-    function giveBatchEntriesForFree(
-        uint256 _raffleId,
-        address[] memory _freePlayers
-    ) external nonReentrant onlyRole(OPERATOR_ROLE) {
-        require(
-            raffles[_raffleId].status == STATUS.ACCEPTED,
-            "Raffle is not in accepted"
-        );
-
-        uint256 freePlayersLength = _freePlayers.length;
-        uint256 validPlayersCount = 0;
-
-        for (uint256 i = 0; i < freePlayersLength; i++) {
-            address entry = _freePlayers[i];
-            EntriesBought memory entryBought = EntriesBought({
-                player: entry,
-                currentEntriesLength: 1
-            });
-            entriesList[_raffleId].push(entryBought);
-
-            claimsData[keccak256(abi.encode(entry, _raffleId))]
-                .numEntriesPerUser++; // needed?
-
-            ++validPlayersCount;
-        }
-
-        raffles[_raffleId].entriesLength =
-            raffles[_raffleId].entriesLength +
-            validPlayersCount;
-
-        emit FreeEntry(
-            _raffleId,
-            _freePlayers,
-            freePlayersLength,
-            raffles[_raffleId].entriesLength
-        );
     }
 }
