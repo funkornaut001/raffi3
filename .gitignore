@@ -12,3 +12,8 @@ docs/
 
 # Dotenv file
 .env
+
+# WIP
+Mng.sol
+test/Mng.t.sol
+test/Mng.invariant.t.sol
