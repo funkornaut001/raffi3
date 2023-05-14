@@ -17,3 +17,4 @@ docs/
 Mng.sol
 test/Mng.t.sol
 test/Mng.invariant.t.sol
+Raffi3Fortify.sol
